@@ -2,10 +2,7 @@ import queue
 
 
 class WorkQueue:
-    """
-    Bounded thread-safe queue used to transfer
-    chunks from the producer to worker threads.
-    """
+    
 
     def __init__(self, max_size=4):
         self.queue = queue.Queue(maxsize=max_size)

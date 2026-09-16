@@ -9,10 +9,7 @@ class Chunk:
 
 
 class FileMapper:
-    """
-    Maps an input file into memory and divides it
-    into fixed-size chunks.
-    """
+    
 
     def __init__(self, filename, chunk_size=1024):
         self.filename = filename

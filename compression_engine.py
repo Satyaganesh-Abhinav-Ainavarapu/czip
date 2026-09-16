@@ -10,10 +10,7 @@ class CompressedChunk:
 
 
 class CompressionEngine:
-    """
-    Compresses individual chunks using the
-    DEFLATE algorithm through Python's zlib.
-    """
+    
 
     def compress(self, chunk):
 

@@ -1,31 +1,13 @@
-C-ZIP is a concurrent file compression utility designed
-to demonstrate operating system concepts such as memory
-mapping, multithreading, synchronization and parallel
-processing. The input file is divided into fixed-size
-chunks and each chunk is processed independently by a
-worker thread. A bounded work queue is used to safely
-transfer chunks between the producer and worker threads.
-The compression engine uses the DEFLATE algorithm to
-compress each chunk independently.
-
-
-C-ZIP is a concurrent file compression utility designed
-to demonstrate operating system concepts such as memory
-mapping, multithreading, synchronization and parallel
-processing. The input file is divided into fixed-size
-chunks and each chunk is processed independently by a
-worker thread. A bounded work queue is used to safely
-transfer chunks between the producer and worker threads.
-The compression engine uses the DEFLATE algorithm to
-compress each chunk independently.
-
-
-C-ZIP is a concurrent file compression utility designed
-to demonstrate operating system concepts such as memory
-mapping, multithreading, synchronization and parallel
-processing. The input file is divided into fixed-size
-chunks and each chunk is processed independently by a
-worker thread. A bounded work queue is used to safely
-transfer chunks between the producer and worker threads.
-The compression engine uses the DEFLATE algorithm to
-compress each chunk independently.
+xreueriyufhlrwefbr4bifuehowidj;fprg4torfiuewodprfuoghtueicoprufotyguheiowepcjruvhot
+fhruefhvfphgry49rye78huerevh8ur4ofev90ergyvehu j9vr0g8vfyhujirvhef89yru4fvevre\v
+rtgt
+rtgtgt4
+vtg4gt6y
+gt6gt
+6
+gtbrg45
+grtg45grg4grtg4
+5ggttg4
+rtg4
+4
+5

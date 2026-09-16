@@ -6,10 +6,7 @@ from compression_engine import CompressionEngine
 
 
 def worker(worker_id, work_queue, compressor, results):
-    """
-    Worker thread that retrieves chunks from the
-    WorkQueue and compresses them.
-    """
+    
 
     while True:
 
