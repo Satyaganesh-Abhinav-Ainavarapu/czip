@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+.DS_Store
+
+*.czip
+*.tmp__pycache__/
+*.pyc
