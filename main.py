@@ -1,7 +1,6 @@
 import argparse
+import base64
 import os
-import queue
-import struct
 import threading
 import zlib
 
@@ -10,62 +9,52 @@ from work_queue import WorkQueue
 from compression_engine import CompressionEngine
 from completion_buffer import CompletionBuffer
 from writer_engine import WriterEngine
+
 from czip_format import (
-    read_header,
-    CHUNK_FORMAT,
-    CHUNK_RECORD_SIZE
+    MAGIC,
+    HEADER_END,
+    CONTENT_START,
+    CONTENT_END,
+    CHUNKS_START,
+    CHUNKS_END,
+    decode_compressed_data,
 )
 
 
-STOP = None
-
-
 def worker(
-    worker_id,
     work_queue,
-    compressor,
-    completion_buffer
-):
-    while True:
-        chunk = work_queue.get()
-
-        try:
-            if chunk is STOP:
-                return
-
-            compressed_chunk = compressor.compress(chunk)
-
-            completion_buffer.put(compressed_chunk)
-
-            print(
-                f"Worker {worker_id}: "
-                f"Compressed Chunk {chunk.chunk_id}"
-            )
-
-        except Exception as error:
-            completion_buffer.report_error(error)
-
-        finally:
-            work_queue.task_done()
-
-    completion_buffer.worker_finished()
-
-
-def run_worker(
-    worker_id,
-    work_queue,
-    compressor,
-    completion_buffer
+    completion_buffer,
+    compression_engine,
+    worker_id
 ):
     try:
-        worker(
-            worker_id,
-            work_queue,
-            compressor,
-            completion_buffer
-        )
-    except Exception as error:
-        completion_buffer.report_error(error)
+        while True:
+
+            chunk = work_queue.get()
+
+            try:
+                if chunk is None:
+                    return
+
+                compressed = compression_engine.compress(
+                    chunk
+                )
+
+                completion_buffer.put(
+                    compressed
+                )
+
+                print(
+                    f"Worker {worker_id}: "
+                    f"Compressed chunk {chunk.chunk_id}"
+                )
+
+            except Exception as e:
+                completion_buffer.report_error(e)
+
+            finally:
+                work_queue.task_done()
+
     finally:
         completion_buffer.worker_finished()
 
@@ -73,65 +62,85 @@ def run_worker(
 def compress_file(
     input_file,
     output_file,
-    chunk_size=1024 * 1024,
-    worker_count=3,
-    queue_size=4
+    chunk_size,
+    worker_count,
+    queue_size
 ):
-    if os.path.abspath(input_file) == os.path.abspath(output_file):
-        raise ValueError("Input and output files must be different.")
+
+    if os.path.abspath(input_file) == os.path.abspath(
+        output_file
+    ):
+        raise ValueError(
+            "Input and output files must be different"
+        )
 
     if worker_count <= 0:
-        raise ValueError("Worker count must be positive.")
+        raise ValueError(
+            "Worker count must be greater than zero"
+        )
 
     if os.path.exists(output_file):
         raise FileExistsError(
             f"Output file already exists: {output_file}"
         )
 
-    mapper = FileMapper(input_file, chunk_size)
-    chunk_count = mapper.get_chunk_count()
+    # Read original file for the readable content section
+    with open(input_file, "rb") as f:
+        original_data = f.read()
 
-    work_queue = WorkQueue(queue_size)
+    file_mapper = FileMapper(
+        input_file,
+        chunk_size
+    )
+
+    chunk_count = file_mapper.get_chunk_count()
+
+    work_queue = WorkQueue(
+        queue_size
+    )
+
     completion_buffer = CompletionBuffer()
-    compressor = CompressionEngine()
+
+    compression_engine = CompressionEngine()
 
     workers = []
 
-    for worker_id in range(worker_count):
+    for i in range(worker_count):
+
         thread = threading.Thread(
-            target=run_worker,
+            target=worker,
             args=(
-                worker_id + 1,
                 work_queue,
-                compressor,
-                completion_buffer
-            ),
-            daemon=True
+                completion_buffer,
+                compression_engine,
+                i + 1
+            )
         )
 
         thread.start()
         workers.append(thread)
 
-    print(f"Input file: {input_file}")
-    print(f"Chunks: {chunk_count}")
-    print(f"Workers: {worker_count}")
-
-    writer = WriterEngine(output_file)
-
     try:
-        # Producer: generate chunks and enqueue them
-        for chunk in mapper.create_chunks():
+
+        # Producer
+        for chunk in file_mapper.create_chunks():
             work_queue.put(chunk)
 
-        # Send one termination marker to each worker
-        for _ in workers:
-            work_queue.put(STOP)
+        # One sentinel per worker
+        for _ in range(worker_count):
+            work_queue.put(None)
 
-        # Writer consumes completed chunks in order
+        # Writer
+        writer = WriterEngine(
+            output_file
+        )
+
         writer.write(
             completion_buffer,
             chunk_count,
-            chunk_size
+            chunk_size,
+            os.path.basename(input_file),
+            original_data
         )
 
         work_queue.join()
@@ -139,87 +148,278 @@ def compress_file(
         for thread in workers:
             thread.join()
 
-        print(f"\nCompression complete: {output_file}")
+        print()
+        print(
+            f"Compression complete: {output_file}"
+        )
+        print(
+            f"Original size: {len(original_data)} bytes"
+        )
+        print(
+            f"Chunks: {chunk_count}"
+        )
 
-    except KeyboardInterrupt:
-        print("\nInterrupted. Waiting for workers to stop...")
+    except Exception:
         raise
 
 
-def decompress_file(input_file, output_file):
-    if os.path.abspath(input_file) == os.path.abspath(output_file):
-        raise ValueError("Input and output files must be different.")
+def parse_archive(path):
+
+    with open(
+        path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        lines = f.readlines()
+
+    if not lines:
+        raise ValueError(
+            "Empty C-ZIP archive"
+        )
+
+    if lines[0].strip() != MAGIC:
+        raise ValueError(
+            "Invalid C-ZIP file"
+        )
+
+    filename = None
+    original_size = None
+    chunk_size = None
+    chunk_count = None
+
+    index = 1
+
+    # -------------------------
+    # HEADER
+    # -------------------------
+
+    while index < len(lines):
+
+        line = lines[index].rstrip("\n")
+
+        if line == HEADER_END:
+            index += 1
+            break
+
+        if line.startswith("FILE: "):
+            filename = line[6:]
+
+        elif line.startswith("ORIGINAL SIZE: "):
+            original_size = int(
+                line[len("ORIGINAL SIZE: "):]
+            )
+
+        elif line.startswith("CHUNK SIZE: "):
+            chunk_size = int(
+                line[len("CHUNK SIZE: "):]
+            )
+
+        elif line.startswith("CHUNKS: "):
+            chunk_count = int(
+                line[len("CHUNKS: "):]
+            )
+
+        index += 1
+
+    if (
+        filename is None
+        or original_size is None
+        or chunk_size is None
+        or chunk_count is None
+    ):
+        raise ValueError(
+            "Incomplete C-ZIP header"
+        )
+
+    # -------------------------
+    # ORIGINAL CONTENT
+    # -------------------------
+
+    while index < len(lines):
+
+        if lines[index].rstrip("\n") == CONTENT_START:
+            index += 1
+            break
+
+        index += 1
+
+    original_lines = []
+
+    while index < len(lines):
+
+        line = lines[index].rstrip("\n")
+
+        if line == CONTENT_END:
+            index += 1
+            break
+
+        original_lines.append(
+            line
+        )
+
+        index += 1
+
+    # -------------------------
+    # COMPRESSED CHUNKS
+    # -------------------------
+
+    while index < len(lines):
+
+        if lines[index].rstrip("\n") == CHUNKS_START:
+            index += 1
+            break
+
+        index += 1
+
+    chunks = {}
+
+    while index < len(lines):
+
+        line = lines[index].rstrip("\n")
+
+        if line == CHUNKS_END:
+            break
+
+        if line.startswith("CHUNK "):
+
+            chunk_id = int(
+                line[len("CHUNK "):]
+            )
+
+            original_line = lines[index + 1].rstrip("\n")
+            compressed_line = lines[index + 2].rstrip("\n")
+            data_line = lines[index + 3].rstrip("\n")
+
+            original_chunk_size = int(
+                original_line[
+                    len("ORIGINAL SIZE: "):
+                ]
+            )
+
+            compressed_size = int(
+                compressed_line[
+                    len("COMPRESSED SIZE: "):
+                ]
+            )
+
+            encoded_data = data_line[
+                len("DATA: "):
+            ]
+
+            compressed_data = (
+                decode_compressed_data(
+                    encoded_data
+                )
+            )
+
+            if len(compressed_data) != compressed_size:
+                raise ValueError(
+                    f"Compressed size mismatch "
+                    f"for chunk {chunk_id}"
+                )
+
+            chunks[chunk_id] = (
+                original_chunk_size,
+                compressed_data
+            )
+
+            index += 4
+
+        else:
+            index += 1
+
+    return (
+        filename,
+        original_size,
+        chunk_size,
+        chunk_count,
+        original_lines,
+        chunks
+    )
+
+
+def decompress_file(
+    input_file,
+    output_file
+):
+
+    (
+        filename,
+        original_size,
+        chunk_size,
+        chunk_count,
+        original_lines,
+        chunks
+    ) = parse_archive(input_file)
 
     if os.path.exists(output_file):
         raise FileExistsError(
             f"Output file already exists: {output_file}"
         )
 
-    with open(input_file, "rb") as source:
-        chunk_size, chunk_count = read_header(source)
+    if len(chunks) != chunk_count:
+        raise ValueError(
+            "Chunk count mismatch"
+        )
 
-        temp_path = output_file + ".tmp"
+    temp_file = output_file + ".tmp"
 
-        try:
-            with open(temp_path, "wb") as destination:
-                for expected_id in range(chunk_count):
-                    record = source.read(CHUNK_RECORD_SIZE)
+    try:
 
-                    if len(record) != CHUNK_RECORD_SIZE:
-                        raise ValueError(
-                            "Incomplete chunk record."
-                        )
+        with open(
+            temp_file,
+            "wb"
+        ) as output:
 
-                    chunk_id, original_size, compressed_size = (
-                        struct.unpack(CHUNK_FORMAT, record)
-                    )
+            for chunk_id in range(chunk_count):
 
-                    if chunk_id != expected_id:
-                        raise ValueError(
-                            "Invalid chunk ordering in archive."
-                        )
-
-                    compressed_data = source.read(
-                        compressed_size
-                    )
-
-                    if len(compressed_data) != compressed_size:
-                        raise ValueError(
-                            "Incomplete compressed chunk."
-                        )
-
-                    data = zlib.decompress(compressed_data)
-
-                    if len(data) != original_size:
-                        raise ValueError(
-                            "Decompressed chunk size mismatch."
-                        )
-
-                    destination.write(data)
-
-                    print(
-                        f"Decompressed Chunk {chunk_id}"
-                    )
-
-                if source.read(1):
+                if chunk_id not in chunks:
                     raise ValueError(
-                        "Unexpected trailing data in archive."
+                        f"Missing chunk {chunk_id}"
                     )
 
-            os.replace(temp_path, output_file)
+                expected_size, compressed_data = (
+                    chunks[chunk_id]
+                )
 
-        except Exception:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+                data = zlib.decompress(
+                    compressed_data
+                )
 
-            raise
+                if len(data) != expected_size:
+                    raise ValueError(
+                        f"Size mismatch for "
+                        f"chunk {chunk_id}"
+                    )
 
-    print(f"\nDecompression complete: {output_file}")
+                output.write(data)
+
+        if os.path.getsize(temp_file) != original_size:
+            raise ValueError(
+                "Final file size does not match "
+                "original size"
+            )
+
+        os.replace(
+            temp_file,
+            output_file
+        )
+
+        print(
+            f"Decompression complete: {output_file}"
+        )
+
+    finally:
+
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
 
 def main():
+
     parser = argparse.ArgumentParser(
-        description="C-ZIP concurrent file compression utility"
+        description="ConcurrentZip (C-ZIP)"
     )
 
     subparsers = parser.add_subparsers(
@@ -228,43 +428,53 @@ def main():
     )
 
     compress_parser = subparsers.add_parser(
-        "compress",
-        help="Compress a file"
+        "compress"
     )
 
-    compress_parser.add_argument("input")
-    compress_parser.add_argument("output")
+    compress_parser.add_argument(
+        "input"
+    )
+
+    compress_parser.add_argument(
+        "output"
+    )
 
     compress_parser.add_argument(
         "--chunk-size",
         type=int,
-        default=1024 * 1024
+        default=64 * 1024
     )
 
     compress_parser.add_argument(
         "--workers",
         type=int,
-        default=3
+        default=4
     )
 
     compress_parser.add_argument(
         "--queue-size",
         type=int,
-        default=4
+        default=8
     )
 
     decompress_parser = subparsers.add_parser(
-        "decompress",
-        help="Decompress a C-ZIP file"
+        "decompress"
     )
 
-    decompress_parser.add_argument("input")
-    decompress_parser.add_argument("output")
+    decompress_parser.add_argument(
+        "input"
+    )
+
+    decompress_parser.add_argument(
+        "output"
+    )
 
     args = parser.parse_args()
 
     try:
+
         if args.command == "compress":
+
             compress_file(
                 args.input,
                 args.output,
@@ -274,13 +484,17 @@ def main():
             )
 
         elif args.command == "decompress":
+
             decompress_file(
                 args.input,
                 args.output
             )
 
-    except (OSError, ValueError, RuntimeError, zlib.error) as error:
-        parser.exit(1, f"Error: {error}\n")
+    except Exception as e:
+
+        print(
+            f"Error: {e}"
+        )
 
 
 if __name__ == "__main__":

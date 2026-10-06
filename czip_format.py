@@ -1,40 +1,62 @@
+import base64
 import struct
 
-MAGIC = b"CZIP0001"
+MAGIC = "CZIP0001"
 
-# Header: magic (8 bytes), chunk size (4 bytes), chunk count (8 bytes)
-HEADER_FORMAT = ">8sIQ"
-HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
-
-# Chunk record: chunk ID, original size, compressed size
-CHUNK_FORMAT = ">QQQ"
-CHUNK_RECORD_SIZE = struct.calcsize(CHUNK_FORMAT)
+HEADER_END = "===== END HEADER ====="
+CONTENT_START = "===== ORIGINAL CONTENT ====="
+CONTENT_END = "===== END ORIGINAL CONTENT ====="
+CHUNKS_START = "===== COMPRESSED CHUNKS ====="
+CHUNKS_END = "===== END COMPRESSED CHUNKS ====="
 
 
-def create_header(chunk_size, chunk_count):
-    return struct.pack(
-        HEADER_FORMAT,
-        MAGIC,
-        chunk_size,
-        chunk_count
+def encode_compressed_data(data):
+    return base64.b64encode(data).decode("ascii")
+
+
+def decode_compressed_data(data):
+    return base64.b64decode(data.encode("ascii"))
+
+
+def create_header(
+    filename,
+    original_size,
+    chunk_size,
+    chunk_count
+):
+    return (
+        f"{MAGIC}\n"
+        f"FILE: {filename}\n"
+        f"ORIGINAL SIZE: {original_size}\n"
+        f"CHUNK SIZE: {chunk_size}\n"
+        f"CHUNKS: {chunk_count}\n"
+        f"{HEADER_END}\n"
     )
 
 
-def read_header(file):
-    data = file.read(HEADER_SIZE)
+def create_content_section(original_data):
+    try:
+        text = original_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = original_data.decode("utf-8", errors="replace")
 
-    if len(data) != HEADER_SIZE:
-        raise ValueError("Invalid or incomplete C-ZIP header.")
-
-    magic, chunk_size, chunk_count = struct.unpack(
-        HEADER_FORMAT,
-        data
+    return (
+        f"{CONTENT_START}\n"
+        f"{text}\n"
+        f"{CONTENT_END}\n"
     )
 
-    if magic != MAGIC:
-        raise ValueError("This is not a valid C-ZIP file.")
 
-    if chunk_size == 0:
-        raise ValueError("Invalid chunk size in C-ZIP header.")
+def create_chunk_record(
+    chunk_id,
+    original_size,
+    compressed_data
+):
+    encoded = encode_compressed_data(compressed_data)
 
-    return chunk_size, chunk_count
+    return (
+        f"CHUNK {chunk_id}\n"
+        f"ORIGINAL SIZE: {original_size}\n"
+        f"COMPRESSED SIZE: {len(compressed_data)}\n"
+        f"DATA: {encoded}\n"
+    )
